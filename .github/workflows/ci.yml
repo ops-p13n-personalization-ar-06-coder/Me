@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install test deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+
+      - name: Repo preflight (ASCII, 4-file rule, no comments/docstrings)
+        run: |
+          python - << 'PY'
+          import os, sys, pathlib, re
+
+          ROOT = pathlib.Path("problems")
+          REQUIRED = {"description.txt","test.py","solution.py","solution_correct.py"}
+
+          def is_ascii(p: pathlib.Path) -> bool:
+            try:
+              p.read_bytes().decode("ascii")
+              return True
+            except UnicodeDecodeError:
+              return False
+
+          def fail(msg):
+            print(f"::error::{msg}")
+            sys.exit(1)
+
+          if not ROOT.exists():
+            print("No problems/ directory yet; skipping preflight.")
+            sys.exit(0)
+
+          for slug in sorted(d for d in ROOT.iterdir() if d.is_dir()):
+            files = {p.name for p in slug.iterdir() if p.is_file()}
+            if files != REQUIRED:
+              missing = REQUIRED - files
+              extra = files - REQUIRED
+              fail(f"{slug}: expected exactly {sorted(REQUIRED)}, missing={sorted(missing)}, extra={sorted(extra)}")
+
+            for name in REQUIRED:
+              p = slug / name
+              if not is_ascii(p):
+                fail(f"{p}: non-ASCII content found")
+
+              if name in {"test.py","solution.py","solution_correct.py"}:
+                s = p.read_text(encoding="ascii")
+                if '"""' in s or "'''" in s:
+                  fail(f"{p}: docstrings are not allowed")
+                for i, line in enumerate(s.splitlines(), 1):
+                  if line.lstrip().startswith("#"):
+                    fail(f"{p}:{i}: comments are not allowed")
+
+          print("Preflight passed.")
+          PY
+
+      - name: Run tests for all problems
+        run: |
+          set -e
+          if [ ! -d problems ]; then
+            echo "No problems/ directory; skipping tests."
+            exit 0
+          fi
+          # Run pytest in every problem folder (isolated)
+          for d in problems/*/ ; do
+            echo "== Testing $d =="
+            (cd "$d" && pytest -q)
+          done
+
